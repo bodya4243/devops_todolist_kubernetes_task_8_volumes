@@ -20,10 +20,10 @@ the `todoapp-nodeport` service; obtain its port with:
 
 ```bash
 kubectl get service todoapp-nodeport -n todoapp
-curl --fail http://localhost:30007/api/health
+curl --fail http://localhost:30007/api/
 ```
 
-The health request should return `Health OK`.
+The API request should return a successful response (HTTP 200).
 
 ## Validate persistent storage
 
@@ -42,15 +42,24 @@ Both PV and PVC should report `Bound`, and the last command should show the
 ## Validate ConfigMap files
 
 The ConfigMap is projected read-only at `/app/configs`, with one file per data key.
-Verify the expected key and its contents:
+Verify the complete, lexically ordered set of expected `key=value` entries and
+that every projected file is read-only:
 
 ```bash
-kubectl exec -n todoapp deployment/todoapp -- sh -c 'ls -l /app/configs && cat /app/configs/PYTHONUNBUFFERED'
+kubectl exec -n todoapp deployment/todoapp -- sh -c '
+  expected="PYTHONUNBUFFERED=1"
+  actual="$(for file in $(find /app/configs -maxdepth 1 -type f -printf "%f\\n" | LC_ALL=C sort); do
+    test ! -w "/app/configs/$file" || exit 1
+    printf "%s=" "$file"
+    cat "/app/configs/$file"
+    printf "\\n"
+  done)"
+  test "$actual" = "$expected"
+'
 ```
 
-The listing should include `PYTHONUNBUFFERED`; its value should be `1`. The
-permissions shown by `ls -l` should not include write permission for the container
-user.
+This verifies that the only projected entry, in lexical order, is
+`PYTHONUNBUFFERED=1` and that the file is not writable by the container user.
 
 ## Validate Secret files
 
@@ -60,6 +69,10 @@ matches the Secret value without printing the secret itself:
 ```bash
 kubectl exec -n todoapp deployment/todoapp -- test -f /app/secrets/SECRET_KEY
 kubectl exec -n todoapp deployment/todoapp -- sh -c 'test ! -w /app/secrets/SECRET_KEY'
+kubectl get secret app-secret -n todoapp -o jsonpath='{.data.SECRET_KEY}' \
+  | base64 --decode \
+  | kubectl exec -i -n todoapp deployment/todoapp -- cmp -s - /app/secrets/SECRET_KEY
 ```
 
-Both commands should exit successfully.
+All commands should exit successfully. The final comparison streams the decoded
+Secret value to `cmp`, so neither value is printed.
